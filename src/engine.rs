@@ -152,7 +152,7 @@ fn process_deposit(
 ) -> ApplicationResult<()> {
     let res = match account_opt {
         Some(account) => {
-            let new_account = account.clone().deposit(amount)?;
+            let new_account = account.deposit(amount)?;
             account_store.accounts.insert(tx.client, new_account);
             Ok(())
         }
@@ -179,7 +179,7 @@ fn process_withdrawal(
 ) -> ApplicationResult<()> {
     match account_opt {
         Some(account) => {
-            match account.clone().withdraw(amount, false) {
+            match account.withdraw(amount, false) {
                 Ok(new_account) => {
                     account_store.accounts.insert(tx.client, new_account);
                 }
@@ -204,7 +204,7 @@ fn process_dispute(
     match account_store.get_historical_tx(tx.tx) {
         Some(historical_tx) => {
             if historical_tx.state == Success {
-                let new_account = account.clone().hold(historical_tx.amount)?;
+                let new_account = account.hold(historical_tx.amount)?;
                 account_store.accounts.insert(tx.client, new_account);
                 account_store.update_tx_state(tx.tx, Disputed);
                 Ok(())
@@ -224,7 +224,7 @@ fn process_chargeback(
     match account_store.get_historical_tx(tx.tx) {
         Some(historical_tx) => {
             if historical_tx.state == Disputed {
-                let new_account = account.clone().chargeback(historical_tx.amount)?;
+                let new_account = account.chargeback(historical_tx.amount)?;
                 account_store.accounts.insert(tx.client, new_account);
                 account_store.update_tx_state(tx.tx, ChargedBack);
                 Ok(())
@@ -244,7 +244,7 @@ fn process_resolve(
     match account_store.get_historical_tx(tx.tx) {
         Some(historical_tx) => {
             if historical_tx.state == Disputed {
-                let new_account = account.clone().release_hold(historical_tx.amount)?;
+                let new_account = account.release_hold(historical_tx.amount)?;
                 account_store.accounts.insert(tx.client, new_account);
                 account_store.update_tx_state(tx.tx, Success);
                 Ok(())
@@ -296,10 +296,10 @@ impl AccountStore {
             .insert(tx.tx, tx.to_historical_transaction(amount));
     }
     pub fn add_tx(&mut self, tx: Transaction) -> ApplicationResult<()> {
-        let account_opt_ref = &self.accounts.get(&tx.client);
-        let account_opt = account_opt_ref.cloned();
-        match (account_opt.clone(), tx.tr_type.clone(), tx.amount) {
-            (.., TransactionType::Deposit, Some(amount)) => {
+        let account_opt_ref = self.accounts.get(&tx.client);
+
+        match (account_opt_ref.cloned(), tx.tr_type.clone(), tx.amount) {
+            (account_opt, TransactionType::Deposit, Some(amount)) => {
                 process_deposit(self, account_opt, tx, amount)
             }
             (Some(account), TransactionType::Dispute, ..) => process_dispute(self, account, tx),
@@ -307,7 +307,7 @@ impl AccountStore {
                 process_chargeback(self, account, tx)
             }
             (Some(account), TransactionType::Resolve, ..) => process_resolve(self, account, tx),
-            (.., TransactionType::Withdrawal, Some(amount)) => {
+            (account_opt, TransactionType::Withdrawal, Some(amount)) => {
                 process_withdrawal(self, account_opt, tx, amount)
             }
             _ => Ok(()),

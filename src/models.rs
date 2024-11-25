@@ -29,7 +29,7 @@ impl From<Error> for ApplicationError {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Transaction {
     #[serde(rename = "type")]
     pub tr_type: TransactionType,
@@ -39,13 +39,13 @@ pub struct Transaction {
 }
 
 impl Transaction {
-
+    #[cfg(test)]
     pub fn new(tr_type: TransactionType, client: u16, tx: u32, amount: Option<Decimal>) -> Self {
         Self {
             tr_type,
             client,
             tx,
-            amount
+            amount,
         }
     }
     pub fn to_historical_transaction(&self, amount: Decimal) -> HistoricalTransaction {
@@ -96,13 +96,19 @@ pub struct Account {
 }
 
 impl Account {
-    pub fn new(client: u16, available: Decimal, held: Decimal, total: Decimal, locked: bool) -> Self {
+    pub fn new(
+        client: u16,
+        available: Decimal,
+        held: Decimal,
+        total: Decimal,
+        locked: bool,
+    ) -> Self {
         Self {
             client,
             available,
             held,
             total,
-            locked
+            locked,
         }
     }
 }

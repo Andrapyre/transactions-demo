@@ -1,9 +1,12 @@
 use csv::Writer;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::Stdout;
 use std::{env, io};
+
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_stream::wrappers::LinesStream;
+use tokio_stream::StreamExt;
 
 use crate::models::TransactionState::{ChargedBack, Disputed, Success};
 use crate::models::{
@@ -22,15 +25,24 @@ fn get_raw_input_file_path() -> ApplicationResult<String> {
     }
 }
 
-pub fn process_file() -> ApplicationResult<()> {
+pub async fn process_file() -> ApplicationResult<()> {
     let raw_file_path = get_raw_input_file_path()?;
-    let file = File::open(raw_file_path)?;
     let mut store = AccountStore::new();
 
-    let mut rdr = csv::Reader::from_reader(file);
-    for result in rdr.deserialize() {
-        let tx: Transaction = result?;
-        let _ = store.add_tx(tx);
+    let file = tokio::fs::File::open(raw_file_path).await?;
+    let reader = BufReader::new(file);
+
+    let stream = reader.lines();
+    let lines = LinesStream::new(stream);
+    let mut stream_without_header = lines.skip(1);
+    while let Some(Ok(line)) = stream_without_header.next().await {
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_reader(line.as_bytes());
+        for result in rdr.deserialize() {
+            let tx: Transaction = result?;
+            let _ = store.add_tx(tx);
+        }
     }
 
     let mut wtr = Writer::from_writer(io::stdout());
@@ -48,13 +60,13 @@ pub struct InternalAccount {
 
 impl InternalAccount {
     fn to_account(&self, id: u16) -> Account {
-        Account {
-            client: id,
-            available: (self.total - self.held).round_dp(4),
-            held: self.held,
-            total: self.total,
-            locked: self.is_locked,
-        }
+        Account::new(
+            id,
+            (self.total - self.held).round_dp(4),
+            self.held,
+            self.total,
+            self.is_locked,
+        )
     }
 
     fn check_is_locked(&self) -> ApplicationResult<()> {
@@ -74,10 +86,15 @@ impl InternalAccount {
             is_locked: false,
         }
     }
-    fn withdraw(self, amount: Decimal) -> ApplicationResult<InternalAccount> {
+    fn withdraw(self, amount: Decimal, is_chargeback: bool) -> ApplicationResult<InternalAccount> {
         let new_total = (self.total - amount).round_dp(4);
         self.check_is_locked()?;
-        if new_total >= Decimal::new(0, 1).round_dp(4) {
+        let available = if is_chargeback {
+            new_total
+        } else {
+            new_total - self.held
+        };
+        if available >= Decimal::new(0, 1).round_dp(4) {
             Ok(Self {
                 held: self.held,
                 total: (self.total - amount).round_dp(4),
@@ -99,24 +116,28 @@ impl InternalAccount {
 
     fn hold(self, amount: Decimal) -> ApplicationResult<InternalAccount> {
         self.check_is_locked()?;
-        Ok(Self {
-            held: (self.held + amount).round_dp(4),
-            total: self.total,
-            is_locked: self.is_locked,
-        })
+        if self.held + amount <= self.total {
+            Ok(Self {
+                held: (self.held + amount).round_dp(4),
+                total: self.total,
+                is_locked: self.is_locked,
+            })
+        } else {
+            ApplicationError::err("Cannot dispute transaction due to insufficient funds in account")
+        }
     }
 
     fn release_hold(self, amount: Decimal) -> ApplicationResult<InternalAccount> {
         self.check_is_locked()?;
         Ok(Self {
-            held: (self.held + amount).round_dp(4),
+            held: (self.held - amount).round_dp(4),
             total: self.total,
             is_locked: self.is_locked,
         })
     }
 
     fn chargeback(self, amount: Decimal) -> ApplicationResult<InternalAccount> {
-        let mut acc = self.withdraw(amount)?;
+        let mut acc = self.withdraw(amount, true)?;
         acc.held = (acc.held - amount).round_dp(4);
         acc.is_locked = true;
         Ok(acc)
@@ -158,7 +179,7 @@ fn process_withdrawal(
 ) -> ApplicationResult<()> {
     match account_opt {
         Some(account) => {
-            match account.clone().withdraw(amount) {
+            match account.clone().withdraw(amount, false) {
                 Ok(new_account) => {
                     account_store.accounts.insert(tx.client, new_account);
                 }
@@ -293,6 +314,7 @@ impl AccountStore {
         }
     }
 
+    #[cfg(test)]
     pub fn export_accounts(&self) -> Vec<Account> {
         self.accounts
             .iter()

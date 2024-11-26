@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::io::Stdout;
 use std::{env, io};
 
-use log::info;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_stream::wrappers::LinesStream;
 use tokio_stream::StreamExt;
@@ -26,6 +25,19 @@ fn get_raw_input_file_path() -> ApplicationResult<String> {
     }
 }
 
+fn read_records_into_store(
+    account_store: &mut AccountStore,
+    bytes: &Vec<u8>,
+) -> ApplicationResult<()> {
+    let mut rdr = csv::ReaderBuilder::new().from_reader(bytes.as_slice());
+    for result in rdr.deserialize() {
+        let tx: Transaction = result?;
+        let _ = account_store.add_tx(tx);
+    }
+
+    Ok(())
+}
+
 pub async fn process_file() -> ApplicationResult<()> {
     let raw_file_path = get_raw_input_file_path()?;
     let mut store = AccountStore::new();
@@ -37,14 +49,24 @@ pub async fn process_file() -> ApplicationResult<()> {
     let mut lines = LinesStream::new(stream);
     let mut header = lines.next().await.unwrap()?;
     header.push("\n".parse().unwrap());
+    let endline_char = "\n".as_bytes();
+    let mut bytes: Vec<u8> = header.as_bytes().to_vec();
+    let mut count_in_chunk = 0;
+    let chunk_size = 100;
 
     while let Some(Ok(line)) = lines.next().await {
-        let bytes: Vec<u8> = [header.as_bytes(), line.as_bytes()].concat();
-        let mut rdr = csv::ReaderBuilder::new().from_reader(bytes.as_slice());
-        for result in rdr.deserialize() {
-            let tx: Transaction = result?;
-            let _ = store.add_tx(tx);
+        if count_in_chunk < chunk_size {
+            bytes.extend_from_slice(&*[endline_char, line.as_bytes()].concat());
+            count_in_chunk += 1;
+        } else {
+            read_records_into_store(&mut store, &bytes)?;
+            bytes = header.as_bytes().to_vec();
+            count_in_chunk = 0;
         }
+    }
+
+    if count_in_chunk > 0 {
+        read_records_into_store(&mut store, &bytes)?;
     }
 
     let mut wtr = Writer::from_writer(io::stdout());

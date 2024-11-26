@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::io::Stdout;
 use std::{env, io};
 
+use log::info;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_stream::wrappers::LinesStream;
 use tokio_stream::StreamExt;
@@ -33,12 +34,13 @@ pub async fn process_file() -> ApplicationResult<()> {
     let reader = BufReader::new(file);
 
     let stream = reader.lines();
-    let lines = LinesStream::new(stream);
-    let mut stream_without_header = lines.skip(1);
-    while let Some(Ok(line)) = stream_without_header.next().await {
-        let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .from_reader(line.as_bytes());
+    let mut lines = LinesStream::new(stream);
+    let mut header = lines.next().await.unwrap()?;
+    header.push("\n".parse().unwrap());
+
+    while let Some(Ok(line)) = lines.next().await {
+        let bytes: Vec<u8> = [header.as_bytes(), line.as_bytes()].concat();
+        let mut rdr = csv::ReaderBuilder::new().from_reader(bytes.as_slice());
         for result in rdr.deserialize() {
             let tx: Transaction = result?;
             let _ = store.add_tx(tx);
